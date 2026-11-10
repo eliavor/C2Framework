@@ -19,8 +19,7 @@ def _beacon(host: str, port: int, agent_id: str) -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(10)
         s.connect((host, port))
-        s.sendall(f"keepalive {agent_id}".encode())
-        s.shutdown(socket.SHUT_WR)
+        s.sendall(f"keepalive {agent_id}\n".encode())
         return s.recv(4096).decode().strip()
 
 

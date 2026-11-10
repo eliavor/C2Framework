@@ -7,6 +7,6 @@ typedef enum {
     CMD_SHELL = 2
 } CommandType;
 
-const char* const commands[] = {"keepalive", "OK", "shell_exec"};
+const char* const commands[] = {"keepalive ", "OK", "shell_exec"};
 
 #endif
